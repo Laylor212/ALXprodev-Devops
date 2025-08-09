@@ -1,9 +1,0 @@
-#!/bin/bash
-# File: parse_pikachu
-
-formatted_name=$(jq -r '.name' data.json | sed 's/.*/\u&/')
-formatted_height=$(jq -r '.height' data.json | awk '{printf "%.1f", $1/10}')
-formatted_weight=$(jq -r '.weight' data.json | awk '{printf "%.1f", $1/10}')
-type=$(jq -r '.types[0].type.name' data.json | sed 's/.*/\u&/')
-
-echo "$formatted_name is of type $type, weighs ${formatted_weight}kg, and is ${formatted_height}m tall."
