@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Config
+POKEMON=("Bulbasaur" "Ivysaur" "Venusaur" "Charmander" "Charmeleon")
+OUT_DIR="./pokemon_out"
+BASE_URL="https://pokeapi.co/api/v2/pokemon"
+MAX_PARALLEL=3              # Concurrency limit
+CURL_OPTS=(--fail --location --silent --show-error --retry 3 --max-time 20)
+
+mkdir -p "$OUT_DIR"
+
+# Track background PIDs and names for status and cleanup
+PIDS=()
+declare -A PID2NAME=()
+
+cleanup() {
+  # Kill any remaining background processes on exit or signal
+  for pid in "${PIDS[@]:-}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
+}
+trap cleanup INT TERM EXIT
+
+fetch_pokemon() {
+  local name="$1"
+  local lower="${name,,}"
+  local url="${BASE_URL}/${lower}"
+  local out="${OUT_DIR}/${lower}.json"
+  local tmp="${out}.part"
+
+  # Fetch to temp, then atomically move on success
+  if curl "${CURL_OPTS[@]}" "$url" -o "$tmp"; then
+    mv -f "$tmp" "$out"
+    echo "[OK] $name -> $out"
+  else
+    echo "[FAIL] $name" >&2
+    rm -f "$tmp" || true
+    return 1
+  fi
+}
+
+wait_for_slot() {
+  # Throttle to MAX_PARALLEL concurrent jobs
+  while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "$MAX_PARALLEL" ]; do
+    sleep 0.1
+  done
+}
+
+# Launch jobs in background with throttle
+for name in "${POKEMON[@]}"; do
+  wait_for_slot
+  fetch_pokemon "$name" &
+  pid=$!
+  PIDS+=("$pid")
+  PID2NAME["$pid"]="$name"
+done
+
+# Wait for completion and collect status
+FAILS=0
+for pid in "${PIDS[@]}"; do
+  if wait "$pid"; then
+    :
+  else
+    echo "Process failed for ${PID2NAME[$pid]}" >&2
+    FAILS=$((FAILS+1))
+  fi
+done
+
+# Clear trap now that all children are done
+trap - INT TERM EXIT
+
+if [ "$FAILS" -gt 0 ]; then
+  echo "One or more downloads failed ($FAILS). Aborting next step." >&2
+  exit 1
+fi
+
+echo "All downloads completed successfully."
+
+# Next step (only runs if all jobs succeeded):
+# Combine into a single JSON array if 'jq' is available.
+if command -v jq >/dev/null 2>&1; then
+  jq -s '.' "$OUT_DIR"/*.json > "$OUT_DIR/all_pokemon.json"
+  echo "Combined JSON written to $OUT_DIR/all_pokemon.json"
+else
+  echo "jq not found; skipping combined JSON step. Individual files are in $OUT_DIR/"
+fi
